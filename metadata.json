@@ -1,0 +1,6 @@
+{
+  "name": "WeatherSphere AI",
+  "description": "A high-fidelity full-stack AI-powered weather forecasting application featuring interactive dashboards, interactive Leaflet weather maps, real-time AQI tracking, and custom smart suggestions.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
