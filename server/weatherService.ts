@@ -300,8 +300,15 @@ export async function generateAISuggestions(current: WeatherCondition, aqi: AirQ
     }
     
     throw new Error('Empty response from Gemini');
-  } catch (err) {
-    console.error('Gemini AI Generation failed, falling back to rule-based engine:', err);
+  } catch (err: any) {
+    const errMsg = err?.message || String(err);
+    const isQuotaExceeded = errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('Quota') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('limit');
+    
+    if (isQuotaExceeded) {
+      console.warn('Gemini AI Generation skipped due to quota limit, falling back to rule-based engine.');
+    } else {
+      console.error('Gemini AI Generation failed, falling back to rule-based engine:', err);
+    }
     return getDeterministicSuggestions(current, aqi);
   }
 }

@@ -50,7 +50,9 @@ import {
   BellRing,
   Sliders,
   FileText,
-  Check
+  Check,
+  Mail,
+  Lock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -58,9 +60,7 @@ import { WeatherIcon, InjectWeatherAnimations } from './components/WeatherIcons'
 import { WeatherAnimations } from './components/WeatherAnimations';
 import { LeafletRadarMap } from './components/LeafletRadarMap';
 import { DashboardSkeleton } from './components/SkeletonLoaders';
-import { ErrorBoundary } from './components/ErrorBoundary';
-import { AIChatbot } from './components/AIChatbot';
-import { WeatherAIChatbot } from './components/WeatherAIChatbot';
+import ErrorBoundary from './components/ErrorBoundary';
 import { WeatherDataPayload, FavoriteCity, WeatherHistoryLog } from './types';
 
 // ==========================================
@@ -119,11 +119,18 @@ const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 // ==========================================
 // AUTH CONTEXT
 // ==========================================
+interface AuthUser {
+  id: string;
+  name: string;
+  email: string;
+  mobile: string;
+}
+
 interface AuthContextType {
   token: string | null;
-  user: { id: string; email: string } | null;
-  login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string) => Promise<void>;
+  user: AuthUser | null;
+  register: (name: string, email: string, password: string, mobile: string) => Promise<any>;
+  login: (email: string, password: string) => Promise<any>;
   logout: () => void;
   authError: string | null;
   clearAuthError: () => void;
@@ -132,55 +139,70 @@ const AuthContext = createContext<AuthContextType | null>(null);
 
 const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('weathersphere_token'));
-  const [user, setUser] = useState<{ id: string; email: string } | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (token) {
-      api.get('/api/auth/user')
-        .then(res => setUser(res.data))
-        .catch(() => {
-          logout();
-        });
-    }
+    const fetchUser = async () => {
+      if (token) {
+        try {
+          const res = await api.get('/api/auth/user', {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          setUser(res.data);
+        } catch (err) {
+          console.error('Failed to load user session:', err);
+          setUser(null);
+          setToken(null);
+          localStorage.removeItem('weathersphere_token');
+        }
+      }
+    };
+    fetchUser();
   }, [token]);
+
+  const register = async (name: string, email: string, password: string, mobile: string) => {
+    try {
+      setAuthError(null);
+      const res = await api.post('/api/auth/register', { name, email, password, mobile });
+      const { token: newToken, user: newUser } = res.data;
+      setToken(newToken);
+      setUser(newUser);
+      localStorage.setItem('weathersphere_token', newToken);
+      return res.data;
+    } catch (err: any) {
+      const errMsg = err.response?.data?.error || 'Registration failed';
+      setAuthError(errMsg);
+      throw new Error(errMsg);
+    }
+  };
 
   const login = async (email: string, password: string) => {
     try {
       setAuthError(null);
       const res = await api.post('/api/auth/login', { email, password });
-      localStorage.setItem('weathersphere_token', res.data.token);
-      setToken(res.data.token);
-      setUser(res.data.user);
+      const { token: newToken, user: newUser } = res.data;
+      setToken(newToken);
+      setUser(newUser);
+      localStorage.setItem('weathersphere_token', newToken);
+      return res.data;
     } catch (err: any) {
-      setAuthError(err.response?.data?.error || 'Authentication failed');
-      throw err;
-    }
-  };
-
-  const register = async (email: string, password: string) => {
-    try {
-      setAuthError(null);
-      const res = await api.post('/api/auth/register', { email, password });
-      localStorage.setItem('weathersphere_token', res.data.token);
-      setToken(res.data.token);
-      setUser(res.data.user);
-    } catch (err: any) {
-      setAuthError(err.response?.data?.error || 'Registration failed');
-      throw err;
+      const errMsg = err.response?.data?.error || 'Login failed';
+      setAuthError(errMsg);
+      throw new Error(errMsg);
     }
   };
 
   const logout = () => {
-    localStorage.removeItem('weathersphere_token');
-    setToken(null);
     setUser(null);
+    setToken(null);
+    localStorage.removeItem('weathersphere_token');
   };
 
   const clearAuthError = () => setAuthError(null);
 
   return (
-    <AuthContext.Provider value={{ token, user, login, register, logout, authError, clearAuthError }}>
+    <AuthContext.Provider value={{ token, user, register, login, logout, authError, clearAuthError }}>
       {children}
     </AuthContext.Provider>
   );
@@ -207,10 +229,19 @@ function MainAppContent() {
 
   if (!themeCtx || !authCtx) return null;
   const { theme, toggleTheme } = themeCtx;
-  const { user, login, register, logout, authError, clearAuthError } = authCtx;
+  const { user, register, login, logout, authError, clearAuthError } = authCtx;
+
+  // Local email/password auth states
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('register');
+  const [authName, setAuthName] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authMobile, setAuthMobile] = useState('');
+  const [authSuccessMsg, setAuthSuccessMsg] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
 
   // Active Dashboard Modules
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'map' | 'agri' | 'health' | 'compare' | 'alerts' | 'logs' | 'ai-chat'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'map' | 'agri' | 'health' | 'compare' | 'alerts' | 'logs'>('dashboard');
 
   // Search and weather states
   const [weatherData, setWeatherData] = useState<WeatherDataPayload | null>(null);
@@ -299,11 +330,8 @@ function MainAppContent() {
     }
   });
 
-  // Auth Dialog state
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
-  const [authEmail, setAuthEmail] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
+  // Weather live image state for the login screen
+  const [selectedWeatherImage, setSelectedWeatherImage] = useState<'sunny' | 'rainy' | 'snowy' | 'stormy' | 'cloudy'>('sunny');
 
   // Primary entrypoint: Fetch weather based on GPS coordinates or fallback
   const fetchWeatherByCoords = async (lat: number, lon: number, cityName?: string, state?: string, country?: string) => {
@@ -546,12 +574,42 @@ function MainAppContent() {
       .catch(err => console.error(err));
   };
 
-  const toggleFavoriteState = async () => {
-    if (!user) {
-      setAuthMode('login');
-      setShowAuthModal(true);
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authName || !authEmail || !authPassword) {
+      alert('Please fill out Name, Email, and Password.');
       return;
     }
+    setAuthLoading(true);
+    clearAuthError();
+    try {
+      await register(authName, authEmail, authPassword, authMobile);
+    } catch (err: any) {
+      console.error(err);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail || !authPassword) {
+      alert('Please specify your registered email and password.');
+      return;
+    }
+    setAuthLoading(true);
+    clearAuthError();
+    try {
+      await login(authEmail, authPassword);
+    } catch (err: any) {
+      console.error(err);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const toggleFavoriteState = async () => {
+    if (!user) return;
 
     if (!weatherData) return;
 
@@ -581,22 +639,255 @@ function MainAppContent() {
     }
   };
 
-  // Auth Submit Action
-  const handleAuthSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      if (authMode === 'login') {
-        await login(authEmail, authPassword);
-      } else {
-        await register(authEmail, authPassword);
-      }
-      setShowAuthModal(false);
-      setAuthEmail('');
-      setAuthPassword('');
-    } catch (err) {
-      // error handled in Context
-    }
-  };
+// ==========================================
+// WEATHER LIVE IMAGES CONSTANT
+// ==========================================
+const WEATHER_LIVE_IMAGES = {
+  sunny: 'https://images.unsplash.com/photo-1504608524841-42fe6f032b4b?auto=format&fit=crop&w=1200&q=80',
+  rainy: 'https://images.unsplash.com/photo-1534274988757-a28bf1a57c17?auto=format&fit=crop&w=1200&q=80',
+  snowy: 'https://images.unsplash.com/photo-1491002052546-bf38f186af56?auto=format&fit=crop&w=1200&q=80',
+  stormy: 'https://images.unsplash.com/photo-1561484930-998b6a7b22e8?auto=format&fit=crop&w=1200&q=80',
+  cloudy: 'https://images.unsplash.com/photo-1483702721041-52367395e8de?auto=format&fit=crop&w=1200&q=80'
+};
+
+
+
+  if (!user) {
+    return (
+      <div className="relative min-h-screen font-sans text-slate-800 dark:text-slate-100 transition-colors duration-300 overflow-x-hidden bg-slate-950 flex items-center justify-center p-4 md:p-8">
+        {/* Ambient atmospheric backdrop */}
+        <div 
+          className="absolute inset-0 z-0 bg-cover bg-center opacity-40 transition-all duration-1000"
+          style={{ backgroundImage: `url(${WEATHER_LIVE_IMAGES[selectedWeatherImage]})` }}
+        />
+        <div className="absolute inset-0 bg-gradient-to-tr from-slate-950 via-slate-950/80 to-slate-900/40 z-10" />
+
+        <div className="relative z-20 w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+          {/* Left Column: Visual Meteorological Previews */}
+          <div className="lg:col-span-7 space-y-6 text-left hidden lg:block">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-500/20 text-white">
+                <Sun className="w-7 h-7 animate-spin" style={{ animationDuration: '15s' }} />
+              </div>
+              <div>
+                <h1 className="text-3xl font-display font-extrabold tracking-tight text-white flex items-center gap-2">
+                  WeatherSphere
+                </h1>
+                <p className="text-xs font-mono text-slate-400 uppercase tracking-widest mt-1">
+                  High-Precision Workspace
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-4 max-w-md">
+              <h2 className="text-4xl font-display font-bold text-white tracking-tight leading-tight">
+                Simulate Ambient Environments
+              </h2>
+              <p className="text-sm text-slate-300 leading-relaxed">
+                Toggle the controls below to preview live atmospheric states and render customized, real-time meteorological models instantly.
+              </p>
+            </div>
+
+            {/* Weather selector panel */}
+            <div className="p-4 bg-slate-900/60 border border-slate-800/80 rounded-3xl backdrop-blur-md max-w-sm space-y-3">
+              <div className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">Atmospheric Atmosphere Simulators</div>
+              <div className="grid grid-cols-5 gap-2">
+                {(['sunny', 'rainy', 'snowy', 'stormy', 'cloudy'] as const).map((w) => (
+                  <button
+                    key={w}
+                    type="button"
+                    onClick={() => setSelectedWeatherImage(w)}
+                    className={`p-2 rounded-xl border flex flex-col items-center gap-1.5 transition-all uppercase text-[9px] font-bold ${
+                      selectedWeatherImage === w
+                        ? 'bg-blue-600/20 border-blue-500 text-blue-400'
+                        : 'border-slate-800 bg-slate-900/30 text-slate-500 hover:text-slate-300 hover:border-slate-700'
+                    }`}
+                  >
+                    <WeatherIcon name={w === 'sunny' ? 'Sun' : (w === 'rainy' ? 'CloudRain' : (w === 'snowy' ? 'CloudSnow' : (w === 'stormy' ? 'CloudLightning' : 'Cloud')))} size={18} />
+                    <span>{w}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Right Column: Dynamic Form Block */}
+          <div className="lg:col-span-5 w-full">
+            <div className="p-8 md:p-10 rounded-[32px] bg-slate-900/80 border border-slate-800/80 shadow-2xl backdrop-blur-xl space-y-6">
+              
+              {/* Heading */}
+              <div className="text-center lg:text-left space-y-2">
+                <div className="lg:hidden flex items-center justify-center gap-2 mb-4">
+                  <Sun className="w-6 h-6 text-blue-500 animate-spin" style={{ animationDuration: '20s' }} />
+                  <span className="text-xl font-bold text-white">WeatherSphere</span>
+                </div>
+                <h3 className="text-2xl font-display font-bold text-white tracking-tight">
+                  {authMode === 'register' ? 'Create Account' : 'Access Account'}
+                </h3>
+                <p className="text-xs text-slate-400">
+                  {authMode === 'register' 
+                    ? 'Register your secure WeatherSphere portal account' 
+                    : 'Sign in with your registered email and password'}
+                </p>
+              </div>
+
+              {/* Status Notifications */}
+              {authError && (
+                <div className="p-4 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-2xl text-xs flex items-center gap-2">
+                  <AlertTriangle size={14} className="shrink-0" />
+                  <span>{authError}</span>
+                </div>
+              )}
+
+              {/* REGISTER VIEW */}
+              {authMode === 'register' && (
+                <form onSubmit={handleRegisterSubmit} className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-mono uppercase text-slate-400 tracking-wider">Your Full Name</label>
+                    <div className="relative flex items-center">
+                      <span className="absolute left-4 text-slate-500"><Activity size={14} /></span>
+                      <input
+                        type="text"
+                        required
+                        value={authName}
+                        onChange={(e) => setAuthName(e.target.value)}
+                        placeholder="e.g. John Doe"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-mono uppercase text-slate-400 tracking-wider">Email Address</label>
+                    <div className="relative flex items-center">
+                      <span className="absolute left-4 text-slate-500"><Mail size={14} /></span>
+                      <input
+                        type="email"
+                        required
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        placeholder="name@gmail.com"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-mono uppercase text-slate-400 tracking-wider">Password</label>
+                    <div className="relative flex items-center">
+                      <span className="absolute left-4 text-slate-500"><Lock size={14} /></span>
+                      <input
+                        type="password"
+                        required
+                        value={authPassword}
+                        onChange={(e) => setAuthPassword(e.target.value)}
+                        placeholder="Choose a secure password"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-mono uppercase text-slate-400 tracking-wider">Mobile Number (Optional)</label>
+                    <div className="relative flex items-center">
+                      <span className="absolute left-4 text-slate-500"><Activity size={14} /></span>
+                      <input
+                        type="tel"
+                        value={authMobile}
+                        onChange={(e) => setAuthMobile(e.target.value)}
+                        placeholder="+1 (555) 000-0000"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/10 hover:shadow-blue-500/25 active:scale-[0.98] disabled:opacity-50"
+                  >
+                    {authLoading ? 'Registering...' : 'Register New Account'}
+                    <LogIn size={14} />
+                  </button>
+
+                  <div className="text-center pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('login');
+                        clearAuthError();
+                      }}
+                      className="text-xs text-blue-400 hover:text-blue-300 transition-colors font-medium"
+                    >
+                      Already registered? Sign In
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* LOGIN VIEW */}
+              {authMode === 'login' && (
+                <form onSubmit={handleLoginSubmit} className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-mono uppercase text-slate-400 tracking-wider">Email Address</label>
+                    <div className="relative flex items-center">
+                      <span className="absolute left-4 text-slate-500"><Mail size={14} /></span>
+                      <input
+                        type="email"
+                        required
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        placeholder="name@gmail.com"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-mono uppercase text-slate-400 tracking-wider">Password</label>
+                    <div className="relative flex items-center">
+                      <span className="absolute left-4 text-slate-500"><Lock size={14} /></span>
+                      <input
+                        type="password"
+                        required
+                        value={authPassword}
+                        onChange={(e) => setAuthPassword(e.target.value)}
+                        placeholder="Enter your password"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/10 hover:shadow-blue-500/25 active:scale-[0.98] disabled:opacity-50"
+                  >
+                    {authLoading ? 'Signing In...' : 'Sign In'}
+                    <LogIn size={14} />
+                  </button>
+
+                  <div className="text-center pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('register');
+                        clearAuthError();
+                      }}
+                      className="text-xs text-blue-400 hover:text-blue-300 transition-colors font-medium"
+                    >
+                      No account? Create one now
+                    </button>
+                  </div>
+                </form>
+              )}
+
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative min-h-screen font-sans text-slate-800 dark:text-slate-100 transition-colors duration-300 overflow-x-hidden bg-slate-50 dark:bg-[#030712] flex flex-col md:flex-row">
@@ -612,12 +903,12 @@ function MainAppContent() {
       <aside className="w-full md:w-64 bg-white/40 dark:bg-slate-950/40 backdrop-blur-xl border-b md:border-b-0 md:border-r border-slate-200/10 dark:border-slate-800/40 flex flex-col p-6 shrink-0 z-20">
         <div className="flex items-center justify-between md:justify-start gap-3 mb-6 md:mb-10">
           <div className="flex items-center gap-3 select-none">
-            <div className="p-2.5 bg-blue-600 rounded-xl shadow-lg shadow-blue-500/20 text-white animate-pulse">
-              <Sparkles className="w-5 h-5" />
+            <div className="p-2.5 bg-blue-600 rounded-xl shadow-lg shadow-blue-500/20 text-white">
+              <Sun className="w-5 h-5 animate-spin" style={{ animationDuration: '12s' }} />
             </div>
             <div>
               <h1 className="text-lg font-display font-bold tracking-tight text-slate-900 dark:text-slate-100">
-                WeatherSphere <span className="text-blue-500 font-medium">AI</span>
+                WeatherSphere
               </h1>
               <p className="text-[9px] font-mono text-slate-500 dark:text-slate-400 uppercase tracking-widest leading-none mt-0.5">
                 Meteorological Port
@@ -642,7 +933,6 @@ function MainAppContent() {
             { id: 'agri', label: 'Agriculture', icon: Sprout },
             { id: 'health', label: 'Health Index', icon: Heart },
             { id: 'alerts', label: 'Alert Center', icon: ShieldAlert },
-            { id: 'ai-chat', label: 'AI Weather Co-Pilot', icon: Bot },
             { id: 'logs', label: 'Saved Locations', icon: History }
           ].map(tab => {
             const TabIcon = tab.icon;
@@ -668,8 +958,8 @@ function MainAppContent() {
         {weatherData && (
           <div className="mt-auto hidden md:block p-4 bg-gradient-to-br from-blue-500/5 to-indigo-500/5 dark:from-indigo-950/40 dark:to-slate-800/40 rounded-2xl border border-slate-200/10 dark:border-slate-800/40 space-y-2">
             <div className="text-[9px] text-blue-600 dark:text-indigo-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
-              <Sparkles size={10} className="animate-pulse" />
-              Sleek AI Agent
+              <Info size={10} className="animate-pulse" />
+              Meteorological Briefing
             </div>
             <p className="text-[11px] leading-relaxed text-slate-600 dark:text-slate-300 line-clamp-4">
               {weatherData.ai.summary}
@@ -774,11 +1064,7 @@ function MainAppContent() {
               </div>
             ) : (
               <button
-                onClick={() => {
-                  setAuthMode('login');
-                  clearAuthError();
-                  setShowAuthModal(true);
-                }}
+                onClick={() => login(authEmail || '', '')}
                 className="flex items-center gap-1.5 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-bold transition-all shadow-lg shadow-blue-500/10 active:scale-95"
               >
                 <LogIn size={14} />
@@ -820,7 +1106,8 @@ function MainAppContent() {
                 
                 {/* 1. PRIMARY WEATHER DASHBOARD */}
                 {activeTab === 'dashboard' && (
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                     
                     {/* Left Panel: Primary Conditions card */}
                     <div className="lg:col-span-1 p-6 rounded-3xl bg-white/20 dark:bg-slate-950/40 border border-slate-200/10 shadow-2xl space-y-6 glass-card">
@@ -897,17 +1184,17 @@ function MainAppContent() {
                     {/* Middle Panel: AI Meteorological Summary & Recharts Hourly Forecast Chart */}
                     <div className="lg:col-span-2 space-y-6">
                       
-                      {/* AI recommendations Box */}
+                      {/* Forecast recommendations Box */}
                       <div className="p-6 rounded-3xl bg-gradient-to-br from-indigo-950/40 via-blue-950/20 to-slate-900/40 border border-indigo-500/10 shadow-2xl glass-card space-y-3 relative overflow-hidden">
                         <div className="absolute top-0 right-0 p-8 opacity-5 text-indigo-500 pointer-events-none">
-                          <Sparkles size={120} />
+                          <Cloud size={120} />
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="p-1.5 bg-indigo-500/10 rounded-lg text-indigo-400">
-                            <Sparkles size={18} className="animate-bounce" />
+                            <Info size={18} className="animate-pulse" />
                           </span>
                           <h3 className="text-sm font-display font-bold tracking-tight text-indigo-400 uppercase">
-                            AI Meteorological Insights
+                            Meteorological Analysis & Insights
                           </h3>
                         </div>
                         <p className="text-sm leading-relaxed text-slate-300 dark:text-slate-300">
@@ -1044,7 +1331,8 @@ function MainAppContent() {
                       </div>
                     </div>
                   </div>
-                )}
+                </div>
+              )}
 
                 {/* 2. LEAFLET RADAR MAP MODULE */}
                 {activeTab === 'map' && (
@@ -1778,118 +2066,12 @@ function MainAppContent() {
                   </div>
                 )}
 
-                {activeTab === 'ai-chat' && (
-                  <WeatherAIChatbot weatherData={weatherData} />
-                )}
-
               </motion.div>
             </AnimatePresence>
           </main>
         )}
       </div>
 
-      {/* ==========================================
-          AUTHENTICATION DIALOG MODAL
-          ========================================== */}
-      <AnimatePresence>
-        {showAuthModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            {/* Backdrop */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setShowAuthModal(false)}
-              className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm"
-            />
-
-            {/* Modal Body */}
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0, y: 15 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.95, opacity: 0, y: 15 }}
-              transition={{ duration: 0.2 }}
-              className="relative w-full max-w-md p-6 bg-slate-900 border border-slate-200/10 rounded-3xl shadow-2xl space-y-4 overflow-hidden z-10 glass-card"
-            >
-              <div className="flex justify-between items-center">
-                <h3 className="text-lg font-display font-bold text-slate-100">
-                  {authMode === 'login' ? 'Access WeatherSphere Portal' : 'Create New Account'}
-                </h3>
-                <button
-                  onClick={() => setShowAuthModal(false)}
-                  className="p-1 text-slate-400 hover:text-slate-100 text-sm"
-                >
-                  ✕
-                </button>
-              </div>
-
-              {authError && (
-                <div className="flex items-center gap-2 p-3 bg-rose-500/15 border border-rose-500/30 text-rose-400 rounded-xl text-xs">
-                  <AlertTriangle size={14} className="shrink-0" />
-                  <span>{authError}</span>
-                </div>
-              )}
-
-              <form onSubmit={handleAuthSubmit} className="space-y-3">
-                <div className="space-y-1">
-                  <label className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Email Address</label>
-                  <input
-                    type="email"
-                    required
-                    value={authEmail}
-                    onChange={(e) => setAuthEmail(e.target.value)}
-                    placeholder="user@example.com"
-                    className="w-full px-4 py-2.5 bg-slate-950/40 border border-slate-200/10 rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Password</label>
-                  <input
-                    type="password"
-                    required
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    placeholder="At least 6 characters"
-                    className="w-full px-4 py-2.5 bg-slate-950/40 border border-slate-200/10 rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white text-xs font-bold rounded-xl transition-all shadow-lg shadow-blue-500/10 mt-2"
-                >
-                  {authMode === 'login' ? 'Verify and Enter' : 'Submit Registration'}
-                </button>
-              </form>
-
-              <div className="text-center pt-3 border-t border-slate-200/5 text-xs text-slate-400">
-                {authMode === 'login' ? (
-                  <p>
-                    Don't have an account?{' '}
-                    <button
-                      onClick={() => { setAuthMode('register'); clearAuthError(); }}
-                      className="text-blue-400 hover:underline font-bold"
-                    >
-                      Register here
-                    </button>
-                  </p>
-                ) : (
-                  <p>
-                    Already registered?{' '}
-                    <button
-                      onClick={() => { setAuthMode('login'); clearAuthError(); }}
-                      className="text-blue-400 hover:underline font-bold"
-                    >
-                      Login here
-                    </button>
-                  </p>
-                )}
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-      <AIChatbot currentWeather={weatherData} />
     </div>
   );
 }

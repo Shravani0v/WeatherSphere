@@ -53,6 +53,16 @@ export const dbStore = {
   findUserById: (id: string) => {
     return readData().users.find((u: any) => u.id === id);
   },
+  updateUser: (id: string, updates: any) => {
+    const data = readData();
+    const index = data.users.findIndex((u: any) => u.id === id);
+    if (index !== -1) {
+      data.users[index] = { ...data.users[index], ...updates };
+      writeData(data);
+      return data.users[index];
+    }
+    return null;
+  },
 
   getFavorites: (userId: string) => {
     return readData().favorites.filter((f: any) => f.userId === userId);

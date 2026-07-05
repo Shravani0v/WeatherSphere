@@ -3,6 +3,7 @@ import path from 'path';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import axios from 'axios';
+import nodemailer from 'nodemailer';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { dbStore } from './server/db';
@@ -60,45 +61,140 @@ async function startServer() {
   // AUTHENTICATION ENDPOINTS
   // ==========================================
 
-  // Register
+  // Setup dynamic transporter for real-world SMTP email or dynamic test Ethereal fallback
+  const getTransporter = async () => {
+    if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+      console.log(`[SMTP] Using real-world SMTP transport: ${process.env.SMTP_HOST}:${process.env.SMTP_PORT || 587}`);
+      return nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT || '587', 10),
+        secure: process.env.SMTP_SECURE === 'true' || process.env.SMTP_PORT === '465',
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+      });
+    } else {
+      console.log(`[SMTP] SMTP credentials not provided. Falling back to dynamic Ethereal email account.`);
+      const testAccount = await nodemailer.createTestAccount();
+      return nodemailer.createTransport({
+        host: "smtp.ethereal.email",
+        port: 587,
+        secure: false,
+        auth: {
+          user: testAccount.user,
+          pass: testAccount.pass,
+        },
+      });
+    }
+  };
+
+  // Send OTP Email
+  const sendOTPEmail = async (email: string, otp: string, name: string) => {
+    try {
+      console.log(`[OTP GENERATED] For ${email}: ${otp}`);
+      const transporter = await getTransporter();
+      const fromAddress = process.env.SMTP_FROM || '"WeatherSphere Security" <security@weathersphere.com>';
+
+      const info = await transporter.sendMail({
+        from: fromAddress,
+        to: email,
+        subject: "Verify Your Email - WeatherSphere OTP",
+        text: `Hello ${name},\n\nYour 6-digit verification code is: ${otp}\n\nThis code expires in 10 minutes.\n\nBest regards,\nWeatherSphere Team`,
+        html: `<div style="font-family: 'Helvetica Neue', Arial, sans-serif; max-width: 600px; margin: auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff; color: #1e293b;">
+          <h2 style="color: #0284c7; text-align: center; margin-bottom: 24px; font-weight: 700;">WeatherSphere Authentication</h2>
+          <p>Hello <strong>${name}</strong>,</p>
+          <p>Thank you for registering at WeatherSphere! To verify your email address and authorize your portal access, please enter the following One-Time Password (OTP) verification code:</p>
+          <div style="background-color: #f0f9ff; border: 1px dashed #bae6fd; padding: 18px; border-radius: 12px; text-align: center; font-size: 28px; font-weight: bold; letter-spacing: 5px; color: #0369a1; margin: 28px 0; font-family: monospace;">
+            ${otp}
+          </div>
+          <p style="font-size: 13px; color: #64748b; line-height: 1.5;">This verification code is valid for <strong>10 minutes</strong>. If you did not request this account, please ignore this message.</p>
+          <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+          <p style="font-size: 11px; color: #94a3b8; text-align: center;">WeatherSphere Portal &copy; 2026. All rights reserved.</p>
+        </div>`
+      });
+
+      let previewUrl = null;
+      if (!process.env.SMTP_HOST) {
+        previewUrl = nodemailer.getTestMessageUrl(info);
+        console.log(`[EMAIL SENT] Ethereal Preview: ${previewUrl}`);
+      } else {
+        console.log(`[EMAIL SENT] Email successfully dispatched to ${email}`);
+      }
+      return previewUrl;
+    } catch (err) {
+      console.error('Failed to dispatch SMTP email:', err);
+      return null;
+    }
+  };
+
+  // Register with Password
   app.post('/api/auth/register', async (req, res) => {
     try {
-      const { email, password } = req.body;
-      if (!email || !password) {
-        return res.status(400).json({ error: 'Email and password are required' });
-      }
-      if (password.length < 6) {
-        return res.status(400).json({ error: 'Password must be at least 6 characters' });
+      const { name, email, password, mobile } = req.body;
+      if (!name || !email || !password) {
+        return res.status(400).json({ error: 'Name, email, and password are required' });
       }
 
-      const existingUser = dbStore.findUserByEmail(email);
+      const existingUser = dbStore.findUserByEmail(email.toLowerCase());
       if (existingUser) {
-        return res.status(400).json({ error: 'An account with this email already exists' });
+        if (!existingUser.passwordHash) {
+          // Upgrade legacy OTP user to have a password hash
+          const passwordHash = bcrypt.hashSync(password, 10);
+          dbStore.updateUser(existingUser.id, {
+            passwordHash,
+            name: name || existingUser.name,
+            mobile: mobile || existingUser.mobile || '',
+            isVerified: true
+          });
+
+          const token = jwt.sign({ id: existingUser.id, email: existingUser.email }, JWT_SECRET, { expiresIn: '7d' });
+
+          return res.status(200).json({
+            message: 'Legacy account upgraded successfully with your new password!',
+            token,
+            user: {
+              id: existingUser.id,
+              name: name || existingUser.name,
+              email: existingUser.email,
+              mobile: mobile || existingUser.mobile || ''
+            }
+          });
+        }
+        return res.status(400).json({ error: 'An account with this email address already exists' });
       }
 
-      const hashedPassword = await bcrypt.hash(password, 10);
-      const newUser = {
+      const userPayload = {
         id: Math.random().toString(36).substring(2, 11),
+        name,
         email: email.toLowerCase(),
-        password: hashedPassword,
+        mobile: mobile || '',
+        passwordHash: bcrypt.hashSync(password, 10),
+        isVerified: true,
         createdAt: new Date().toISOString()
       };
 
-      dbStore.saveUser(newUser);
+      dbStore.saveUser(userPayload);
 
-      const token = jwt.sign({ id: newUser.id, email: newUser.email }, JWT_SECRET, { expiresIn: '7d' });
+      const token = jwt.sign({ id: userPayload.id, email: userPayload.email }, JWT_SECRET, { expiresIn: '7d' });
 
       return res.status(201).json({
+        message: 'Account successfully registered!',
         token,
-        user: { id: newUser.id, email: newUser.email }
+        user: {
+          id: userPayload.id,
+          name: userPayload.name,
+          email: userPayload.email,
+          mobile: userPayload.mobile
+        }
       });
     } catch (err: any) {
       console.error('Registration error:', err);
-      return res.status(500).json({ error: 'Failed to complete registration' });
+      return res.status(500).json({ error: 'Failed to complete registration flow' });
     }
   });
 
-  // Login
+  // Login with Password
   app.post('/api/auth/login', async (req, res) => {
     try {
       const { email, password } = req.body;
@@ -106,21 +202,27 @@ async function startServer() {
         return res.status(400).json({ error: 'Email and password are required' });
       }
 
-      const user = dbStore.findUserByEmail(email);
+      const user = dbStore.findUserByEmail(email.toLowerCase());
       if (!user) {
         return res.status(401).json({ error: 'Invalid email or password' });
       }
 
-      const isPasswordValid = await bcrypt.compare(password, user.password);
-      if (!isPasswordValid) {
+      const isMatch = user.passwordHash && bcrypt.compareSync(password, user.passwordHash);
+      if (!isMatch) {
         return res.status(401).json({ error: 'Invalid email or password' });
       }
 
       const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
 
       return res.json({
+        message: 'Login successful. Welcome back!',
         token,
-        user: { id: user.id, email: user.email }
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          mobile: user.mobile
+        }
       });
     } catch (err) {
       console.error('Login error:', err);
@@ -131,10 +233,16 @@ async function startServer() {
   // Get current verified user
   app.get('/api/auth/user', authenticateToken, (req: any, res) => {
     const user = dbStore.findUserById(req.user.id);
-    if (!user) {
-      return res.status(404).json({ error: 'User profile not found' });
+    if (!user || !user.isVerified) {
+      return res.status(404).json({ error: 'invalid credentials' });
     }
-    return res.json({ id: user.id, email: user.email });
+    return res.json({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      mobile: user.mobile,
+      isVerified: user.isVerified
+    });
   });
 
 
@@ -390,7 +498,14 @@ Be engaging, precise, objective, and supportive. Present your ideas beautifully,
       const reply = response.text || "I am unable to generate a response at this moment. Please try again.";
       return res.json({ reply });
     } catch (err: any) {
-      console.error('Chat AI generation failed:', err);
+      const errMsg = err?.message || String(err);
+      const isQuotaExceeded = errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('Quota') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('limit');
+      
+      if (isQuotaExceeded) {
+        console.warn('Chat AI generation skipped due to quota limit, falling back to rule-based conversation engine.');
+      } else {
+        console.error('Chat AI generation failed, falling back to rule-based engine:', err);
+      }
       // Fallback on error
       const { messages, weatherContext } = req.body;
       try {

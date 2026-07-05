@@ -59,9 +59,20 @@ export const LeafletRadarMap: React.FC<LeafletRadarMapProps> = ({ lat, lon, city
 
     // Destroy existing map instance to prevent double-initialization crashes
     if (mapInstanceRef.current) {
-      mapInstanceRef.current.remove();
+      try {
+        mapInstanceRef.current.remove();
+      } catch (err) {
+        console.warn('Error removing map instance:', err);
+      }
       mapInstanceRef.current = null;
       markerRef.current = null;
+    }
+
+    if (mapContainerRef.current) {
+      mapContainerRef.current.innerHTML = '';
+      if ((mapContainerRef.current as any)._leaflet_id) {
+        delete (mapContainerRef.current as any)._leaflet_id;
+      }
     }
 
     try {
@@ -142,7 +153,11 @@ export const LeafletRadarMap: React.FC<LeafletRadarMapProps> = ({ lat, lon, city
 
     return () => {
       if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove();
+        try {
+          mapInstanceRef.current.remove();
+        } catch (err) {
+          console.warn('Error during map cleanup remove:', err);
+        }
         mapInstanceRef.current = null;
         markerRef.current = null;
       }
