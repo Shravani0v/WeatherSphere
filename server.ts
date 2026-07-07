@@ -4,10 +4,14 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import axios from 'axios';
 import nodemailer from 'nodemailer';
+import cors from 'cors';
+import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { dbStore } from './server/db';
 import { fetchWeatherData } from './server/weatherService';
+import authRouter from './server/auth/routes/authRoutes';
 
 const PORT = 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'weathersphere_super_secret_9988_key';
@@ -31,11 +35,39 @@ if (process.env.GEMINI_API_KEY) {
 
 async function startServer() {
   const app = express();
+
+  // Trust reverse proxy for rate limiter to identify client IP
+  app.set('trust proxy', 1);
+
+  // Production security headers
+  app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+  }));
+
+  // CORS integration supporting cookies
+  app.use(cors({
+    origin: true,
+    credentials: true,
+  }));
+
+  // Parse authorization cookies
+  app.use(cookieParser());
+
   app.use(express.json());
 
-  // Simple Request Logger
+  // Enhanced Request and Response Logger (filtered to API requests)
   app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    if (req.url.startsWith('/api')) {
+      const startTime = Date.now();
+      res.on('finish', () => {
+        const duration = Date.now() - startTime;
+        console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} - Status: ${res.statusCode} (${duration}ms)`);
+        if (res.statusCode === 403) {
+          console.warn(`[403 FORBIDDEN WARNING] URL: ${req.url}, Headers: ${JSON.stringify(req.headers)}, Cookies: ${JSON.stringify(req.cookies)}`);
+        }
+      });
+    }
     next();
   });
 
@@ -128,122 +160,10 @@ async function startServer() {
     }
   };
 
-  // Register with Password
-  app.post('/api/auth/register', async (req, res) => {
-    try {
-      const { name, email, password, mobile } = req.body;
-      if (!name || !email || !password) {
-        return res.status(400).json({ error: 'Name, email, and password are required' });
-      }
-
-      const existingUser = dbStore.findUserByEmail(email.toLowerCase());
-      if (existingUser) {
-        if (!existingUser.passwordHash) {
-          // Upgrade legacy OTP user to have a password hash
-          const passwordHash = bcrypt.hashSync(password, 10);
-          dbStore.updateUser(existingUser.id, {
-            passwordHash,
-            name: name || existingUser.name,
-            mobile: mobile || existingUser.mobile || '',
-            isVerified: true
-          });
-
-          const token = jwt.sign({ id: existingUser.id, email: existingUser.email }, JWT_SECRET, { expiresIn: '7d' });
-
-          return res.status(200).json({
-            message: 'Legacy account upgraded successfully with your new password!',
-            token,
-            user: {
-              id: existingUser.id,
-              name: name || existingUser.name,
-              email: existingUser.email,
-              mobile: mobile || existingUser.mobile || ''
-            }
-          });
-        }
-        return res.status(400).json({ error: 'An account with this email address already exists' });
-      }
-
-      const userPayload = {
-        id: Math.random().toString(36).substring(2, 11),
-        name,
-        email: email.toLowerCase(),
-        mobile: mobile || '',
-        passwordHash: bcrypt.hashSync(password, 10),
-        isVerified: true,
-        createdAt: new Date().toISOString()
-      };
-
-      dbStore.saveUser(userPayload);
-
-      const token = jwt.sign({ id: userPayload.id, email: userPayload.email }, JWT_SECRET, { expiresIn: '7d' });
-
-      return res.status(201).json({
-        message: 'Account successfully registered!',
-        token,
-        user: {
-          id: userPayload.id,
-          name: userPayload.name,
-          email: userPayload.email,
-          mobile: userPayload.mobile
-        }
-      });
-    } catch (err: any) {
-      console.error('Registration error:', err);
-      return res.status(500).json({ error: 'Failed to complete registration flow' });
-    }
-  });
-
-  // Login with Password
-  app.post('/api/auth/login', async (req, res) => {
-    try {
-      const { email, password } = req.body;
-      if (!email || !password) {
-        return res.status(400).json({ error: 'Email and password are required' });
-      }
-
-      const user = dbStore.findUserByEmail(email.toLowerCase());
-      if (!user) {
-        return res.status(401).json({ error: 'Invalid email or password' });
-      }
-
-      const isMatch = user.passwordHash && bcrypt.compareSync(password, user.passwordHash);
-      if (!isMatch) {
-        return res.status(401).json({ error: 'Invalid email or password' });
-      }
-
-      const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
-
-      return res.json({
-        message: 'Login successful. Welcome back!',
-        token,
-        user: {
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          mobile: user.mobile
-        }
-      });
-    } catch (err) {
-      console.error('Login error:', err);
-      return res.status(500).json({ error: 'Failed to authenticate user' });
-    }
-  });
-
-  // Get current verified user
-  app.get('/api/auth/user', authenticateToken, (req: any, res) => {
-    const user = dbStore.findUserById(req.user.id);
-    if (!user || !user.isVerified) {
-      return res.status(404).json({ error: 'invalid credentials' });
-    }
-    return res.json({
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      mobile: user.mobile,
-      isVerified: user.isVerified
-    });
-  });
+  // ==========================================
+  // PRODUCTION AUTHENTICATION ROUTER
+  // ==========================================
+  app.use('/api/auth', authRouter);
 
 
   // ==========================================
@@ -486,14 +406,32 @@ Be engaging, precise, objective, and supportive. Present your ideas beautifully,
         parts: [{ text: msg.content }]
       }));
 
-      const response = await aiClient.models.generateContent({
-        model: 'gemini-3.5-flash',
-        contents: geminiMessages,
-        config: {
-          systemInstruction: systemPrompt,
-          temperature: 0.7
+      const executeChatWithRetry = async (retries = 2, delay = 1000): Promise<any> => {
+        for (let attempt = 0; attempt <= retries; attempt++) {
+          try {
+            return await aiClient!.models.generateContent({
+              model: 'gemini-3.5-flash',
+              contents: geminiMessages,
+              config: {
+                systemInstruction: systemPrompt,
+                temperature: 0.7
+              }
+            });
+          } catch (err: any) {
+            const errMsg = err?.message || String(err);
+            const isTransient = errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('limit');
+            if (isTransient && attempt < retries) {
+              const backoff = delay * Math.pow(2, attempt);
+              console.warn(`[Gemini Chat API] Transient error (attempt ${attempt + 1}/${retries + 1}): ${errMsg}. Retrying in ${backoff}ms...`);
+              await new Promise(resolve => setTimeout(resolve, backoff));
+            } else {
+              throw err;
+            }
+          }
         }
-      });
+      };
+
+      const response = await executeChatWithRetry();
 
       const reply = response.text || "I am unable to generate a response at this moment. Please try again.";
       return res.json({ reply });
@@ -504,7 +442,7 @@ Be engaging, precise, objective, and supportive. Present your ideas beautifully,
       if (isQuotaExceeded) {
         console.warn('Chat AI generation skipped due to quota limit, falling back to rule-based conversation engine.');
       } else {
-        console.error('Chat AI generation failed, falling back to rule-based engine:', err);
+        console.warn('Chat AI generation failed, falling back to rule-based engine:', errMsg);
       }
       // Fallback on error
       const { messages, weatherContext } = req.body;

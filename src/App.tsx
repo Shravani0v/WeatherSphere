@@ -67,7 +67,8 @@ import { WeatherDataPayload, FavoriteCity, WeatherHistoryLog } from './types';
 // AXIOS INSTANCE SETUP
 // ==========================================
 const api = axios.create({
-  baseURL: '/'
+  baseURL: '/',
+  withCredentials: true
 });
 
 // Auto intercept request to attach auth tokens
@@ -78,6 +79,38 @@ api.interceptors.request.use((config) => {
   }
   return config;
 }, (err) => Promise.reject(err));
+
+// Auto intercept response to handle automatic JWT rotation
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+    // Rotate token if expired or unauthorized
+    if (
+      (error.response?.status === 401 || error.response?.status === 403) &&
+      !originalRequest._retry &&
+      originalRequest.url &&
+      !originalRequest.url.includes('/api/auth/login') &&
+      !originalRequest.url.includes('/api/auth/refresh-token')
+    ) {
+      originalRequest._retry = true;
+      try {
+        const res = await axios.post('/api/auth/refresh-token', {}, { withCredentials: true });
+        const { token: newToken } = res.data;
+        localStorage.setItem('weathersphere_token', newToken);
+        if (originalRequest.headers) {
+          originalRequest.headers.Authorization = `Bearer ${newToken}`;
+        }
+        return api(originalRequest);
+      } catch (refreshErr) {
+        localStorage.removeItem('weathersphere_token');
+        window.dispatchEvent(new Event('auth_session_expired'));
+        return Promise.reject(refreshErr);
+      }
+    }
+    return Promise.reject(error);
+  }
+);
 
 
 // ==========================================
@@ -124,6 +157,7 @@ interface AuthUser {
   name: string;
   email: string;
   mobile: string;
+  isVerified?: boolean;
 }
 
 interface AuthContextType {
@@ -131,9 +165,16 @@ interface AuthContextType {
   user: AuthUser | null;
   register: (name: string, email: string, password: string, mobile: string) => Promise<any>;
   login: (email: string, password: string) => Promise<any>;
+  verifyOtp: (email: string, otp: string) => Promise<any>;
+  resendOtp: (email: string) => Promise<any>;
+  forgotPassword: (email: string) => Promise<any>;
+  verifyResetOtp: (email: string, otp: string) => Promise<any>;
+  resetPassword: (email: string, password: string) => Promise<any>;
   logout: () => void;
   authError: string | null;
   clearAuthError: () => void;
+  setToken: (token: string | null) => void;
+  setUser: (user: AuthUser | null) => void;
 }
 const AuthContext = createContext<AuthContextType | null>(null);
 
@@ -143,12 +184,20 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
+    const handleSessionExpired = () => {
+      setToken(null);
+      setUser(null);
+      localStorage.removeItem('weathersphere_token');
+    };
+    window.addEventListener('auth_session_expired', handleSessionExpired);
+    return () => window.removeEventListener('auth_session_expired', handleSessionExpired);
+  }, []);
+
+  useEffect(() => {
     const fetchUser = async () => {
       if (token) {
         try {
-          const res = await api.get('/api/auth/user', {
-            headers: { Authorization: `Bearer ${token}` }
-          });
+          const res = await api.get('/api/auth/profile');
           setUser(res.data);
         } catch (err) {
           console.error('Failed to load user session:', err);
@@ -165,10 +214,6 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     try {
       setAuthError(null);
       const res = await api.post('/api/auth/register', { name, email, password, mobile });
-      const { token: newToken, user: newUser } = res.data;
-      setToken(newToken);
-      setUser(newUser);
-      localStorage.setItem('weathersphere_token', newToken);
       return res.data;
     } catch (err: any) {
       const errMsg = err.response?.data?.error || 'Registration failed';
@@ -189,11 +234,80 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     } catch (err: any) {
       const errMsg = err.response?.data?.error || 'Login failed';
       setAuthError(errMsg);
+      throw err; // throw raw error object so UI can inspect the unverified flag
+    }
+  };
+
+  const verifyOtp = async (email: string, otp: string) => {
+    try {
+      setAuthError(null);
+      const res = await api.post('/api/auth/verify-otp', { email, otp });
+      const { token: newToken, user: newUser } = res.data;
+      setToken(newToken);
+      setUser(newUser);
+      localStorage.setItem('weathersphere_token', newToken);
+      return res.data;
+    } catch (err: any) {
+      const errMsg = err.response?.data?.error || 'OTP verification failed';
+      setAuthError(errMsg);
       throw new Error(errMsg);
     }
   };
 
-  const logout = () => {
+  const resendOtp = async (email: string) => {
+    try {
+      setAuthError(null);
+      const res = await api.post('/api/auth/resend-otp', { email });
+      return res.data;
+    } catch (err: any) {
+      const errMsg = err.response?.data?.error || 'Resending OTP failed';
+      setAuthError(errMsg);
+      throw new Error(errMsg);
+    }
+  };
+
+  const forgotPassword = async (email: string) => {
+    try {
+      setAuthError(null);
+      const res = await api.post('/api/auth/forgot-password', { email });
+      return res.data;
+    } catch (err: any) {
+      const errMsg = err.response?.data?.error || 'Failed to request reset OTP';
+      setAuthError(errMsg);
+      throw new Error(errMsg);
+    }
+  };
+
+  const verifyResetOtp = async (email: string, otp: string) => {
+    try {
+      setAuthError(null);
+      const res = await api.post('/api/auth/verify-reset-otp', { email, otp });
+      return res.data;
+    } catch (err: any) {
+      const errMsg = err.response?.data?.error || 'Reset OTP verification failed';
+      setAuthError(errMsg);
+      throw new Error(errMsg);
+    }
+  };
+
+  const resetPassword = async (email: string, password: string) => {
+    try {
+      setAuthError(null);
+      const res = await api.post('/api/auth/reset-password', { email, password });
+      return res.data;
+    } catch (err: any) {
+      const errMsg = err.response?.data?.error || 'Failed to reset password';
+      setAuthError(errMsg);
+      throw new Error(errMsg);
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await api.post('/api/auth/logout');
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
     setUser(null);
     setToken(null);
     localStorage.removeItem('weathersphere_token');
@@ -202,7 +316,24 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   const clearAuthError = () => setAuthError(null);
 
   return (
-    <AuthContext.Provider value={{ token, user, register, login, logout, authError, clearAuthError }}>
+    <AuthContext.Provider
+      value={{
+        token,
+        user,
+        register,
+        login,
+        verifyOtp,
+        resendOtp,
+        forgotPassword,
+        verifyResetOtp,
+        resetPassword,
+        logout,
+        authError,
+        clearAuthError,
+        setToken,
+        setUser
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
@@ -229,16 +360,39 @@ function MainAppContent() {
 
   if (!themeCtx || !authCtx) return null;
   const { theme, toggleTheme } = themeCtx;
-  const { user, register, login, logout, authError, clearAuthError } = authCtx;
+  const {
+    user,
+    register,
+    login,
+    logout,
+    verifyOtp,
+    resendOtp,
+    forgotPassword,
+    verifyResetOtp,
+    resetPassword,
+    authError,
+    clearAuthError,
+  } = authCtx;
 
   // Local email/password auth states
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('register');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'verify' | 'forgot' | 'verify-reset' | 'reset-password'>('login');
   const [authName, setAuthName] = useState('');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authMobile, setAuthMobile] = useState('');
   const [authSuccessMsg, setAuthSuccessMsg] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
+  
+  // OTP Verification and countdown limits
+  const [otpCode, setOtpCode] = useState('');
+  const [resendCooldown, setResendCooldown] = useState(0);
+
+  useEffect(() => {
+    if (resendCooldown > 0) {
+      const timer = setTimeout(() => setResendCooldown((prev) => prev - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [resendCooldown]);
 
   // Active Dashboard Modules
   const [activeTab, setActiveTab] = useState<'dashboard' | 'map' | 'agri' | 'health' | 'compare' | 'alerts' | 'logs'>('dashboard');
@@ -582,8 +736,12 @@ function MainAppContent() {
     }
     setAuthLoading(true);
     clearAuthError();
+    setAuthSuccessMsg(null);
     try {
-      await register(authName, authEmail, authPassword, authMobile);
+      const res = await register(authName, authEmail, authPassword, authMobile);
+      setAuthSuccessMsg(res.message || 'Account created successfully! Please verify your email.');
+      setAuthMode('verify');
+      setResendCooldown(30);
     } catch (err: any) {
       console.error(err);
     } finally {
@@ -599,8 +757,110 @@ function MainAppContent() {
     }
     setAuthLoading(true);
     clearAuthError();
+    setAuthSuccessMsg(null);
     try {
       await login(authEmail, authPassword);
+    } catch (err: any) {
+      console.error(err);
+      if (err.response?.data?.unverified) {
+        setAuthSuccessMsg('Email verification is pending. We have sent a new verification code to your email.');
+        setAuthMode('verify');
+        setResendCooldown(30);
+      }
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleVerifyOtpSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail || !otpCode) {
+      alert('Please fill in your email and the 6-digit verification code.');
+      return;
+    }
+    setAuthLoading(true);
+    clearAuthError();
+    setAuthSuccessMsg(null);
+    try {
+      await verifyOtp(authEmail, otpCode);
+    } catch (err: any) {
+      console.error(err);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleForgotPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail) {
+      alert('Please specify your email address.');
+      return;
+    }
+    setAuthLoading(true);
+    clearAuthError();
+    setAuthSuccessMsg(null);
+    try {
+      const res = await forgotPassword(authEmail);
+      setAuthSuccessMsg(res.message || 'If registered, we have sent a 6-digit reset code to your inbox.');
+      setAuthMode('verify-reset');
+      setResendCooldown(30);
+    } catch (err: any) {
+      console.error(err);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleVerifyResetOtpSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail || !otpCode) {
+      alert('Please fill in your email and the 6-digit reset code.');
+      return;
+    }
+    setAuthLoading(true);
+    clearAuthError();
+    setAuthSuccessMsg(null);
+    try {
+      const res = await verifyResetOtp(authEmail, otpCode);
+      setAuthSuccessMsg(res.message || 'Code verified! Please set your new password.');
+      setAuthMode('reset-password');
+    } catch (err: any) {
+      console.error(err);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleResetPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail || !authPassword) {
+      alert('Please enter your email and a new secure password.');
+      return;
+    }
+    setAuthLoading(true);
+    clearAuthError();
+    setAuthSuccessMsg(null);
+    try {
+      const res = await resetPassword(authEmail, authPassword);
+      setAuthSuccessMsg(res.message || 'Password reset successfully! Please log in.');
+      setAuthMode('login');
+      setAuthPassword('');
+    } catch (err: any) {
+      console.error(err);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    if (resendCooldown > 0) return;
+    setAuthLoading(true);
+    clearAuthError();
+    setAuthSuccessMsg(null);
+    try {
+      const res = await resendOtp(authEmail);
+      setAuthSuccessMsg(res.message || 'A fresh code has been sent to your email.');
+      setResendCooldown(30);
     } catch (err: any) {
       console.error(err);
     } finally {
@@ -656,15 +916,20 @@ const WEATHER_LIVE_IMAGES = {
     return (
       <div className="relative min-h-screen font-sans text-slate-800 dark:text-slate-100 transition-colors duration-300 overflow-x-hidden bg-slate-950 flex items-center justify-center p-4 md:p-8">
         {/* Ambient atmospheric backdrop */}
-        <div 
-          className="absolute inset-0 z-0 bg-cover bg-center opacity-40 transition-all duration-1000"
-          style={{ backgroundImage: `url(${WEATHER_LIVE_IMAGES[selectedWeatherImage]})` }}
+        <WeatherAnimations 
+          conditionCode={
+            selectedWeatherImage === 'sunny' ? 0 :
+            selectedWeatherImage === 'rainy' ? 63 :
+            selectedWeatherImage === 'snowy' ? 73 :
+            selectedWeatherImage === 'stormy' ? 95 : 3
+          } 
+          isDay={true} 
         />
-        <div className="absolute inset-0 bg-gradient-to-tr from-slate-950 via-slate-950/80 to-slate-900/40 z-10" />
+        <div className="absolute inset-0 bg-gradient-to-tr from-slate-950/85 via-slate-950/55 to-slate-900/30 z-10" />
 
         <div className="relative z-20 w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
-          {/* Left Column: Visual Meteorological Previews */}
-          <div className="lg:col-span-7 space-y-6 text-left hidden lg:block">
+          {/* Left Column: Visual Meteorological Previews / Features Side */}
+          <div className="lg:col-span-7 p-8 md:p-10 rounded-[32px] bg-slate-900/50 border border-slate-800/40 shadow-2xl backdrop-blur-xl space-y-6 text-left hidden lg:block">
             <div className="flex items-center gap-3">
               <div className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-500/20 text-white">
                 <Sun className="w-7 h-7 animate-spin" style={{ animationDuration: '15s' }} />
@@ -673,7 +938,7 @@ const WEATHER_LIVE_IMAGES = {
                 <h1 className="text-3xl font-display font-extrabold tracking-tight text-white flex items-center gap-2">
                   WeatherSphere
                 </h1>
-                <p className="text-xs font-mono text-slate-400 uppercase tracking-widest mt-1">
+                <p className="text-xs font-mono text-slate-300 uppercase tracking-widest mt-1">
                   High-Precision Workspace
                 </p>
               </div>
@@ -683,14 +948,14 @@ const WEATHER_LIVE_IMAGES = {
               <h2 className="text-4xl font-display font-bold text-white tracking-tight leading-tight">
                 Simulate Ambient Environments
               </h2>
-              <p className="text-sm text-slate-300 leading-relaxed">
+              <p className="text-sm text-slate-200 leading-relaxed">
                 Toggle the controls below to preview live atmospheric states and render customized, real-time meteorological models instantly.
               </p>
             </div>
 
             {/* Weather selector panel */}
-            <div className="p-4 bg-slate-900/60 border border-slate-800/80 rounded-3xl backdrop-blur-md max-w-sm space-y-3">
-              <div className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">Atmospheric Atmosphere Simulators</div>
+            <div className="p-5 bg-slate-950/50 border border-slate-800/80 rounded-3xl backdrop-blur-md max-w-sm space-y-3">
+              <div className="text-[10px] font-mono text-slate-300 uppercase tracking-widest font-bold">Atmospheric Atmosphere Simulators</div>
               <div className="grid grid-cols-5 gap-2">
                 {(['sunny', 'rainy', 'snowy', 'stormy', 'cloudy'] as const).map((w) => (
                   <button
@@ -699,11 +964,11 @@ const WEATHER_LIVE_IMAGES = {
                     onClick={() => setSelectedWeatherImage(w)}
                     className={`p-2 rounded-xl border flex flex-col items-center gap-1.5 transition-all uppercase text-[9px] font-bold ${
                       selectedWeatherImage === w
-                        ? 'bg-blue-600/20 border-blue-500 text-blue-400'
-                        : 'border-slate-800 bg-slate-900/30 text-slate-500 hover:text-slate-300 hover:border-slate-700'
+                        ? 'bg-blue-600/30 border-blue-500 text-blue-400'
+                        : 'border-slate-800 bg-slate-900/40 text-slate-400 hover:text-slate-200 hover:border-slate-700'
                     }`}
                   >
-                    <WeatherIcon name={w === 'sunny' ? 'Sun' : (w === 'rainy' ? 'CloudRain' : (w === 'snowy' ? 'CloudSnow' : (w === 'stormy' ? 'CloudLightning' : 'Cloud')))} size={18} />
+                    <WeatherIcon name={w === 'sunny' ? 'Sun' : (w === 'rainy' ? 'CloudRain' : (w === 'snowy' ? 'Snowflake' : (w === 'stormy' ? 'Zap' : 'Cloud')))} size={18} />
                     <span>{w}</span>
                   </button>
                 ))}
@@ -722,16 +987,31 @@ const WEATHER_LIVE_IMAGES = {
                   <span className="text-xl font-bold text-white">WeatherSphere</span>
                 </div>
                 <h3 className="text-2xl font-display font-bold text-white tracking-tight">
-                  {authMode === 'register' ? 'Create Account' : 'Access Account'}
+                  {authMode === 'register' && 'Create Account'}
+                  {authMode === 'login' && 'Access Account'}
+                  {authMode === 'verify' && 'Verify Your Email'}
+                  {authMode === 'forgot' && 'Reset Password'}
+                  {authMode === 'verify-reset' && 'Enter Reset Code'}
+                  {authMode === 'reset-password' && 'Choose New Password'}
                 </h3>
                 <p className="text-xs text-slate-400">
-                  {authMode === 'register' 
-                    ? 'Register your secure WeatherSphere portal account' 
-                    : 'Sign in with your registered email and password'}
+                  {authMode === 'register' && 'Register your secure WeatherSphere portal account'}
+                  {authMode === 'login' && 'Sign in with your registered email and password'}
+                  {authMode === 'verify' && `Enter the 6-digit verification code sent to ${authEmail || 'your email'}`}
+                  {authMode === 'forgot' && 'We will send a 6-digit authorization code to reset your password'}
+                  {authMode === 'verify-reset' && `Enter the 6-digit reset code sent to ${authEmail || 'your email'}`}
+                  {authMode === 'reset-password' && 'Enter a secure password containing at least 8 characters with upper, lower, number and symbol.'}
                 </p>
               </div>
 
               {/* Status Notifications */}
+              {authSuccessMsg && (
+                <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-2xl text-xs flex items-center gap-2">
+                  <Activity size={14} className="shrink-0 text-emerald-400" />
+                  <span>{authSuccessMsg}</span>
+                </div>
+              )}
+
               {authError && (
                 <div className="p-4 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-2xl text-xs flex items-center gap-2">
                   <AlertTriangle size={14} className="shrink-0" />
@@ -785,6 +1065,9 @@ const WEATHER_LIVE_IMAGES = {
                         className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
                       />
                     </div>
+                    <p className="text-[10px] text-slate-400 font-sans mt-1 px-1">
+                      Must contain at least <strong className="text-slate-300">8 characters</strong>, <strong className="text-slate-300">an uppercase letter</strong>, <strong className="text-slate-300">a lowercase letter</strong>, <strong className="text-slate-300">a number</strong>, and <strong className="text-slate-300">a special character</strong>.
+                    </p>
                   </div>
 
                   <div className="space-y-1.5">
@@ -802,9 +1085,9 @@ const WEATHER_LIVE_IMAGES = {
                   </div>
 
                   <button
-                    type="submit"
-                    disabled={authLoading}
-                    className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/10 hover:shadow-blue-500/25 active:scale-[0.98] disabled:opacity-50"
+                     type="submit"
+                     disabled={authLoading}
+                     className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/10 hover:shadow-blue-500/25 active:scale-[0.98] disabled:opacity-50 cursor-pointer"
                   >
                     {authLoading ? 'Registering...' : 'Register New Account'}
                     <LogIn size={14} />
@@ -816,8 +1099,9 @@ const WEATHER_LIVE_IMAGES = {
                       onClick={() => {
                         setAuthMode('login');
                         clearAuthError();
+                        setAuthSuccessMsg(null);
                       }}
-                      className="text-xs text-blue-400 hover:text-blue-300 transition-colors font-medium"
+                      className="text-xs text-blue-400 hover:text-blue-300 transition-colors font-medium cursor-pointer"
                     >
                       Already registered? Sign In
                     </button>
@@ -861,9 +1145,144 @@ const WEATHER_LIVE_IMAGES = {
                   <button
                     type="submit"
                     disabled={authLoading}
-                    className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/10 hover:shadow-blue-500/25 active:scale-[0.98] disabled:opacity-50"
+                    className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/10 hover:shadow-blue-500/25 active:scale-[0.98] disabled:opacity-50 cursor-pointer"
                   >
                     {authLoading ? 'Signing In...' : 'Sign In'}
+                    <LogIn size={14} />
+                  </button>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('forgot');
+                        clearAuthError();
+                        setAuthSuccessMsg(null);
+                      }}
+                      className="text-xs text-blue-400 hover:text-blue-300 transition-colors cursor-pointer font-medium"
+                    >
+                      Forgot password?
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('verify');
+                        clearAuthError();
+                        setAuthSuccessMsg(null);
+                      }}
+                      className="text-xs text-slate-400 hover:text-slate-300 transition-colors cursor-pointer"
+                    >
+                      Pending verification?
+                    </button>
+                  </div>
+
+                  <div className="text-center border-t border-slate-800/60 pt-4 mt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('register');
+                        clearAuthError();
+                        setAuthSuccessMsg(null);
+                      }}
+                      className="text-xs text-blue-400 hover:text-blue-300 transition-colors font-medium cursor-pointer"
+                    >
+                      No account? Create one now
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* VERIFY OTP VIEW */}
+              {authMode === 'verify' && (
+                <form onSubmit={handleVerifyOtpSubmit} className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-mono uppercase text-slate-400 tracking-wider">Email Address</label>
+                    <div className="relative flex items-center">
+                      <span className="absolute left-4 text-slate-500"><Mail size={14} /></span>
+                      <input
+                        type="email"
+                        required
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        placeholder="name@gmail.com"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-mono uppercase text-slate-400 tracking-wider">6-Digit Verification Code</label>
+                    <div className="relative flex items-center">
+                      <span className="absolute left-4 text-slate-500"><Activity size={14} /></span>
+                      <input
+                        type="text"
+                        required
+                        maxLength={6}
+                        value={otpCode}
+                        onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                        placeholder="e.g. 123456"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white tracking-[6px] font-mono font-bold placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all text-center"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/10 hover:shadow-blue-500/25 active:scale-[0.98] disabled:opacity-50 cursor-pointer"
+                  >
+                    {authLoading ? 'Verifying...' : 'Verify Email Code'}
+                    <LogIn size={14} />
+                  </button>
+
+                  <div className="flex items-center justify-between pt-2">
+                    <button
+                      type="button"
+                      disabled={resendCooldown > 0 || authLoading}
+                      onClick={handleResendOtp}
+                      className="text-xs text-blue-400 hover:text-blue-300 transition-colors font-medium disabled:opacity-50 disabled:text-slate-500 cursor-pointer"
+                    >
+                      {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend OTP Code'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('login');
+                        clearAuthError();
+                        setAuthSuccessMsg(null);
+                      }}
+                      className="text-xs text-slate-400 hover:text-slate-300 transition-colors cursor-pointer"
+                    >
+                      Back to Sign In
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* FORGOT PASSWORD VIEW */}
+              {authMode === 'forgot' && (
+                <form onSubmit={handleForgotPasswordSubmit} className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-mono uppercase text-slate-400 tracking-wider">Registered Email Address</label>
+                    <div className="relative flex items-center">
+                      <span className="absolute left-4 text-slate-500"><Mail size={14} /></span>
+                      <input
+                        type="email"
+                        required
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        placeholder="name@gmail.com"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/10 hover:shadow-blue-500/25 active:scale-[0.98] disabled:opacity-50 cursor-pointer"
+                  >
+                    {authLoading ? 'Requesting...' : 'Request Reset OTP'}
                     <LogIn size={14} />
                   </button>
 
@@ -871,14 +1290,121 @@ const WEATHER_LIVE_IMAGES = {
                     <button
                       type="button"
                       onClick={() => {
-                        setAuthMode('register');
+                        setAuthMode('login');
                         clearAuthError();
+                        setAuthSuccessMsg(null);
                       }}
-                      className="text-xs text-blue-400 hover:text-blue-300 transition-colors font-medium"
+                      className="text-xs text-blue-400 hover:text-blue-300 transition-colors font-medium cursor-pointer"
                     >
-                      No account? Create one now
+                      Back to Sign In
                     </button>
                   </div>
+                </form>
+              )}
+
+              {/* VERIFY RESET OTP VIEW */}
+              {authMode === 'verify-reset' && (
+                <form onSubmit={handleVerifyResetOtpSubmit} className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-mono uppercase text-slate-400 tracking-wider">Email Address</label>
+                    <div className="relative flex items-center">
+                      <span className="absolute left-4 text-slate-500"><Mail size={14} /></span>
+                      <input
+                        type="email"
+                        required
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        placeholder="name@gmail.com"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-mono uppercase text-slate-400 tracking-wider">6-Digit Reset OTP Code</label>
+                    <div className="relative flex items-center">
+                      <span className="absolute left-4 text-slate-500"><Activity size={14} /></span>
+                      <input
+                        type="text"
+                        required
+                        maxLength={6}
+                        value={otpCode}
+                        onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                        placeholder="e.g. 123456"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white tracking-[6px] font-mono font-bold placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all text-center"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/10 hover:shadow-blue-500/25 active:scale-[0.98] disabled:opacity-50 cursor-pointer"
+                  >
+                    {authLoading ? 'Verifying...' : 'Verify Reset OTP'}
+                    <LogIn size={14} />
+                  </button>
+
+                  <div className="text-center pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('forgot');
+                        clearAuthError();
+                        setAuthSuccessMsg(null);
+                      }}
+                      className="text-xs text-blue-400 hover:text-blue-300 transition-colors font-medium cursor-pointer"
+                    >
+                      Resend Reset Code
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* RESET PASSWORD VIEW */}
+              {authMode === 'reset-password' && (
+                <form onSubmit={handleResetPasswordSubmit} className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-mono uppercase text-slate-400 tracking-wider">Email Address</label>
+                    <div className="relative flex items-center">
+                      <span className="absolute left-4 text-slate-500"><Mail size={14} /></span>
+                      <input
+                        type="email"
+                        required
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        placeholder="name@gmail.com"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-mono uppercase text-slate-400 tracking-wider">New Password</label>
+                    <div className="relative flex items-center">
+                      <span className="absolute left-4 text-slate-500"><Lock size={14} /></span>
+                      <input
+                        type="password"
+                        required
+                        value={authPassword}
+                        onChange={(e) => setAuthPassword(e.target.value)}
+                        placeholder="Choose a new secure password"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                      />
+                    </div>
+                    <p className="text-[10px] text-slate-400 font-sans mt-1 px-1">
+                      Must contain at least <strong className="text-slate-300">8 characters</strong>, <strong className="text-slate-300">an uppercase letter</strong>, <strong className="text-slate-300">a lowercase letter</strong>, <strong className="text-slate-300">a number</strong>, and <strong className="text-slate-300">a special character</strong>.
+                    </p>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/10 hover:shadow-blue-500/25 active:scale-[0.98] disabled:opacity-50 cursor-pointer"
+                  >
+                    {authLoading ? 'Updating...' : 'Update Password'}
+                    <LogIn size={14} />
+                  </button>
                 </form>
               )}
 
@@ -896,8 +1422,13 @@ const WEATHER_LIVE_IMAGES = {
         <WeatherAnimations 
           conditionCode={weatherData.current.conditionCode} 
           isDay={weatherData.current.isDay} 
+          windSpeed={weatherData.current.windSpeed}
+          temp={weatherData.current.temp}
         />
       )}
+
+      {/* Dynamic atmospheric background overlay for superior readability */}
+      <div className="absolute inset-0 bg-slate-50/75 dark:bg-[#030712]/80 backdrop-blur-[2px] transition-colors duration-1000 z-0 pointer-events-none" />
 
       {/* Sidebar - Visible on Desktop */}
       <aside className="w-full md:w-64 bg-white/40 dark:bg-slate-950/40 backdrop-blur-xl border-b md:border-b-0 md:border-r border-slate-200/10 dark:border-slate-800/40 flex flex-col p-6 shrink-0 z-20">

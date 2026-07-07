@@ -1,0 +1,42 @@
+{
+  "users": [
+    {
+      "id": "0bpel2n0j",
+      "name": "Shital Shinde",
+      "email": "shindeshital3217@gmail.com",
+      "passwordHash": "$2b$12$KeF5EC/x3oDutGGm1LQaxe88dE4WZ6Zh2OweiwUAZvUSRT50.eUYW",
+      "mobile": "9082405317",
+      "isVerified": true,
+      "otpHash": "$2b$10$/3l8pm8UNIqnmhARv0/99OjT9lECMR5aWFObCKua4PKgtJzBreKR6",
+      "otpType": "verify",
+      "otpExpiresAt": 1783410515697,
+      "otpLastRequestedAt": 1783410215697,
+      "otpRequestsTimestamps": [
+        1783410145667,
+        1783410215697
+      ],
+      "loginFailuresCount": 0,
+      "createdAt": "2026-07-07T07:42:26.112Z"
+    },
+    {
+      "id": "1hwlg9hmk",
+      "name": "Shravani Shinde",
+      "email": "shindeshravani0510@gmail.com",
+      "passwordHash": "$2b$12$q8H037edabJZJoFNDPoBEeJ9D9y5p/wfvqPLVw7lMZImwmSm7g9Ri",
+      "mobile": "9082405317",
+      "isVerified": true,
+      "otpHash": "$2b$10$IcNYa5Uvgg.HUx0cCmnQD.8Q7VwFI9TqNXpWM/P/RoQkaRXbJLH5K",
+      "otpType": "verify",
+      "otpExpiresAt": 1783410631787,
+      "otpLastRequestedAt": 1783410331787,
+      "otpRequestsTimestamps": [
+        1783410290449,
+        1783410331787
+      ],
+      "loginFailuresCount": 0,
+      "createdAt": "2026-07-07T07:44:50.892Z"
+    }
+  ],
+  "favorites": [],
+  "history": []
+}
