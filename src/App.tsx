@@ -36,6 +36,7 @@ import {
   Sprout, 
   AlertTriangle, 
   Eye, 
+  EyeOff,
   History, 
   Sparkles, 
   Navigation,
@@ -75,6 +76,9 @@ const api = axios.create({
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('weathersphere_token');
   if (token) {
+    if (!config.headers) {
+      config.headers = {} as any;
+    }
     config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
@@ -379,6 +383,7 @@ function MainAppContent() {
   const [authName, setAuthName] = useState('');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [authMobile, setAuthMobile] = useState('');
   const [authSuccessMsg, setAuthSuccessMsg] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
@@ -509,7 +514,7 @@ function MainAppContent() {
           lon: res.data.location.lon,
           temp: res.data.current.temp,
           conditionText: res.data.current.conditionText
-        }).then(() => refreshHistory());
+        }).then(() => refreshHistory()).catch(err => console.error('Failed to save search history:', err));
       }
     } catch (err: any) {
       console.error(err);
@@ -535,7 +540,7 @@ function MainAppContent() {
           lon: res.data.location.lon,
           temp: res.data.current.temp,
           conditionText: res.data.current.conditionText
-        }).then(() => refreshHistory());
+        }).then(() => refreshHistory()).catch(err => console.error('Failed to save search history:', err));
       }
     } catch (err) {
       setError(`No matches found for '${query}'. Try searching coordinates or a different city name.`);
@@ -1057,13 +1062,21 @@ const WEATHER_LIVE_IMAGES = {
                     <div className="relative flex items-center">
                       <span className="absolute left-4 text-slate-500"><Lock size={14} /></span>
                       <input
-                        type="password"
+                        type={showPassword ? "text" : "password"}
                         required
                         value={authPassword}
                         onChange={(e) => setAuthPassword(e.target.value)}
                         placeholder="Choose a secure password"
-                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-11 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-4 text-slate-500 hover:text-slate-300 focus:outline-none cursor-pointer"
+                        title={showPassword ? "Hide password" : "Show password"}
+                      >
+                        {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
                     </div>
                     <p className="text-[10px] text-slate-400 font-sans mt-1 px-1">
                       Must contain at least <strong className="text-slate-300">8 characters</strong>, <strong className="text-slate-300">an uppercase letter</strong>, <strong className="text-slate-300">a lowercase letter</strong>, <strong className="text-slate-300">a number</strong>, and <strong className="text-slate-300">a special character</strong>.
@@ -1132,13 +1145,21 @@ const WEATHER_LIVE_IMAGES = {
                     <div className="relative flex items-center">
                       <span className="absolute left-4 text-slate-500"><Lock size={14} /></span>
                       <input
-                        type="password"
+                        type={showPassword ? "text" : "password"}
                         required
                         value={authPassword}
                         onChange={(e) => setAuthPassword(e.target.value)}
                         placeholder="Enter your password"
-                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-11 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-4 text-slate-500 hover:text-slate-300 focus:outline-none cursor-pointer"
+                        title={showPassword ? "Hide password" : "Show password"}
+                      >
+                        {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
                     </div>
                   </div>
 
@@ -1384,13 +1405,21 @@ const WEATHER_LIVE_IMAGES = {
                     <div className="relative flex items-center">
                       <span className="absolute left-4 text-slate-500"><Lock size={14} /></span>
                       <input
-                        type="password"
+                        type={showPassword ? "text" : "password"}
                         required
                         value={authPassword}
                         onChange={(e) => setAuthPassword(e.target.value)}
                         placeholder="Choose a new secure password"
-                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                        className="w-full bg-slate-950/40 border border-slate-800/80 rounded-2xl py-3 pl-11 pr-11 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-4 text-slate-500 hover:text-slate-300 focus:outline-none cursor-pointer"
+                        title={showPassword ? "Hide password" : "Show password"}
+                      >
+                        {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
                     </div>
                     <p className="text-[10px] text-slate-400 font-sans mt-1 px-1">
                       Must contain at least <strong className="text-slate-300">8 characters</strong>, <strong className="text-slate-300">an uppercase letter</strong>, <strong className="text-slate-300">a lowercase letter</strong>, <strong className="text-slate-300">a number</strong>, and <strong className="text-slate-300">a special character</strong>.

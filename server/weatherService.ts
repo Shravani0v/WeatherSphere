@@ -296,10 +296,11 @@ export async function generateAISuggestions(current: WeatherCondition, aqi: AirQ
           });
         } catch (err: any) {
           const errMsg = err?.message || String(err);
-          const isTransient = errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('limit');
+          const isQuota = errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota') || errMsg.includes('Quota');
+          const isTransient = (errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('limit')) && !isQuota;
           if (isTransient && attempt < retries) {
             const backoff = delay * Math.pow(2, attempt);
-            console.warn(`[Gemini Suggestion API] Transient error (attempt ${attempt + 1}/${retries + 1}): ${errMsg}. Retrying in ${backoff}ms...`);
+            console.warn(`[Gemini Suggestion API] Transient error (attempt ${attempt + 1}/${retries + 1}). Retrying in ${backoff}ms...`);
             await new Promise(resolve => setTimeout(resolve, backoff));
           } else {
             throw err;

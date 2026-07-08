@@ -106,7 +106,29 @@ export class AuthController {
       }
 
       if (user.isVerified) {
-        return res.status(400).json({ error: 'This account is already verified. Please proceed to login.' });
+        const accessToken = JWTService.generateAccessToken({ id: user.id, email: user.email });
+        const refreshToken = JWTService.generateRefreshToken({ id: user.id, email: user.email });
+        const refreshTokenHash = JWTService.hashToken(refreshToken);
+
+        dbStore.updateUser(user.id, { refreshTokenHash });
+
+        res.cookie('refreshToken', refreshToken, {
+          httpOnly: true,
+          secure: true,
+          sameSite: 'none',
+          maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+        });
+
+        return res.status(200).json({
+          message: 'Account is already verified. Logged in successfully.',
+          token: accessToken,
+          user: {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            mobile: user.mobile,
+          },
+        });
       }
 
       if (!user.otpHash || !user.otpExpiresAt || user.otpType !== 'verify') {
@@ -301,7 +323,7 @@ export class AuthController {
       }
 
       if (user.isVerified) {
-        return res.status(400).json({ error: 'This account is already verified.' });
+        return res.status(200).json({ message: 'This account is already verified.' });
       }
 
       // Check OTP limiters
